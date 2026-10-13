@@ -1,0 +1,18 @@
+# 统一用 LF，避免 Windows 上警告
+* text=auto eol=lf
+
+# 本地工具数据，不应发布
+.workbuddy/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.vscode/
+.idea/
+
+# 临时文件
+*.log
+*~

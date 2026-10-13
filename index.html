@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>星星村 · 黑白像素迷宫</title>
+<style>
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%}
+  body{
+    background:#fff;color:#000;
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",system-ui,sans-serif;
+    display:flex;align-items:center;justify-content:center;padding:8px;
+  }
+  #wrap{display:flex;flex-direction:column;align-items:center;gap:8px;max-width:100%}
+  h1{font-size:14px;font-weight:500;margin:0;letter-spacing:.08em}
+  /* 默认：画面和方向键并排，画面能占满整屏高度 */
+  #row{display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:center}
+  #side{display:flex;flex-direction:column;gap:10px;align-items:center}
+  #stage{line-height:0;border:3px solid #000;background:#fff}
+  canvas{display:block;image-rendering:pixelated}
+  .pad{display:grid;grid-template-columns:repeat(3,34px);grid-template-rows:repeat(3,34px);gap:2px}
+  .pad button{font-size:14px;padding:0}
+  .col{display:flex;flex-direction:column;gap:6px;width:100%}
+  .col button{width:100%}
+  button{font:12px/1.2 inherit;border:2px solid #000;background:#fff;color:#000;padding:9px 12px;cursor:pointer;border-radius:0;-webkit-tap-highlight-color:transparent}
+  button:active{background:#000;color:#fff}
+  .keys{font-size:11px;color:#444;line-height:1.7;text-align:center}
+  .keys b{font-weight:500;color:#000}
+  /* 屏幕很矮时藏说明，把高度让给画面 */
+  @media (max-height:620px){ .keys{display:none} }
+  /* 很窄时方向键挪到画面下方 */
+  @media (max-width:560px){ #row{flex-direction:column} #side{flex-direction:row;gap:14px} }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <h1>星星村 · 黑白像素迷宫</h1>
+  <div id="row">
+    <div id="stage"><canvas id="screen"></canvas></div>
+    <div id="side">
+      <div class="pad">
+        <span></span><button data-dir="up">▲</button><span></span>
+        <button data-dir="left">◀</button><span></span><button data-dir="right">▶</button>
+        <span></span><button data-dir="down">▼</button><span></span>
+      </div>
+      <div class="col">
+        <button id="btnHint">问村长（Z）</button>
+        <button id="btnNew">换个迷宫（R）</button>
+        <button id="btnSnd">音效：开</button>
+      </div>
+    </div>
+  </div>
+  <div class="keys">
+    方向键 / WASD 走路 · 点地图任意格子自动寻路 · <b>Z</b> 问村长要提示 · <b>R</b> 换新迷宫<br>
+    没有倒计时，走错就回头，5 颗星星找齐就能进小屋
+  </div>
+</div>
+<script>
+(function(){
+"use strict";
+
+/* ---------- 逻辑分辨率：1 单位 = 1 个"像素" ----------
+   刻意定得比 Game Boy 原版(160×144)大一点点，但整体收窄到 164px，
+   这样在手机上能整数放大到 2 倍（164×2=328，仍在竖屏宽度内），
+   格子才是 12px——5 岁小孩点得准。 */
+var W=164, H=218;
+var MW=13, MH=13, CELL=12;            // 迷宫 13×13 格，每格 12px
+var MOX=4, MOY=4;                     // 迷宫左上角
+var BOX={x:4,y:168,w:156,h:46};
+var FONT='"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif';
+var FS=11, LH=14;
+
+var cv=document.getElementById('screen');
+cv.width=W; cv.height=H;
+var ctx=cv.getContext('2d');
+var buf=document.createElement('canvas'); buf.width=W; buf.height=H;
+var b=buf.getContext('2d',{willReadFrequently:true});
+
+/* ---------- 精灵：12×12，'#'为黑点 ---------- */
+function mirror(rows){return rows.map(function(r){return r.split('').reverse().join('');});}
+
+// 主角（正面/背面/侧面，各2帧走路）
+var P_DOWN=[
+"............",
+"..######..#..",
+".########.#..",
+".##.....###..",
+".##.##.###...",
+".##.....##...",
+".#######.#...",
+".########.#..",
+"..######..#..",
+".###....###..",
+".###....###..",
+"............"];
+var P_DOWN_B=[
+"............",
+"..######..#..",
+".########.#..",
+".##.....###..",
+".##.##.###...",
+".##.....##...",
+".#######.#...",
+".########.#..",
+"..######..#..",
+"..####.###...",
+"...##..###...",
+"............"];
+var P_UP=[
+"............",
+"..######..#..",
+".########.#..",
+".########.#..",
+".########.#..",
+".########.#..",
+".#######.##..",
+".########.#..",
+"..######..#..",
+".###....###..",
+".###....###..",
+"............"];
+var P_UP_B=[
+"............",
+"..######..#..",
+".########.#..",
+".########.#..",
+".########.#..",
+".########.#..",
+".#######.##..",
+".########.#..",
+"..######..#..",
+"..####.###...",
+"...##..###...",
+"............"];
+var P_SIDE=[
+"............",
+"...#####.....",
+"..#######.##.",
+"..###...###..",
+"..##....##...",
+"..##.###.#...",
+"..#######....",
+".########....",
+".#######.....",
+"..###.###....",
+"..##..##.....",
+"............"];
+var P_SIDE_B=[
+"............",
+"...#####.....",
+"..#######.##.",
+"..###...###..",
+"..##....##...",
+"..##.###.#...",
+"..#######....",
+".########....",
+".#######.....",
+"..#######....",
+"...##.##.....",
+"............"];
+var P_LEFT=mirror(P_SIDE), P_LEFT_B=mirror(P_SIDE_B);
+
+// 星星（2帧闪烁）
+var STAR_A=[
+"............",
+".....##.....",
+"....####....",
+"...######...",
+"..########..",
+"..########..",
+"..########..",
+"...######...",
+"....####....",
+".....##.....",
+"............",
+"............"];
+var STAR_B=[
+"............",
+"............",
+".....##.....",
+"....####....",
+"...######...",
+"...######...",
+"...######...",
+"....####....",
+".....##.....",
+"............",
+"............",
+"............"];
+
+// 村长
+var NPC=[
+"............",
+"..##########.",
+".##########..",
+"..##.....##..",
+"...#.....#...",
+"..##.....##..",
+"..##########.",
+"...######....",
+"..#########..",
+"...#####.....",
+"...##.###....",
+"............"];
+
+function drawSprite(rows,ox,oy){
+  for(var r=0;r<rows.length;r++){
+    var line=rows[r];
+    for(var c=0;c<line.length;c++){
+      if(line.charAt(c)==='#') b.fillRect(ox+c,oy+r,1,1);
+    }
+  }
+}
+
+/* ---------- 迷宫生成：房间式（房间 + 走廊 + 打通支路） ----------
+   注意：不能用「递归回溯细杆迷宫」——那种迷宫通道恒为 1 格宽，
+   2×2 连续空地永远不存在，小屋（2×2）放不进去，开局即崩。 */
+var DIRS=[[0,-1,'up'],[1,0,'right'],[0,1,'down'],[-1,0,'left']];
+
+function carve(g,x0,y0,x1,y1){
+  if(x1<x0){var t=x0;x0=x1;x1=t;}
+  if(y1<y0){t=y0;y0=y1;y1=t;}
+  for(var y=y0;y<=y1;y++)for(var x=x0;x<=x1;x++)
+    if(x>0&&y>0&&x<MW-1&&y<MH-1) g[y][x]=0;
+}
+
+function genMaze(){
+  var g=[],y,x,yy,xx;
+  for(y=0;y<MH;y++){ g[y]=[]; for(x=0;x<MW;x++) g[y][x]=1; }
+
+  var CW=Math.ceil(MW/2), CH=Math.ceil(MH/2);
+  var cx,cy;
+
+  // 走廊：直线或 L 形绕路
+  function corridor(x1,y1,x2,y2){
+    if(x1===x2||y1===y2){ carve(g,x1,y1,x2,y2); return; }
+    var cx2=Math.random()<0.5?x1:x2, cy2=Math.random()<0.5?y1:y2;
+    carve(g,x1,y1,cx2,cy2);
+    carve(g,cx2,cy2,x2,y2);
+  }
+
+  // 1) 每个逻辑块放一个小房间。参数经 800×8 组网格搜索标定：
+  //    留白 42% / 房间≤3 格，得到空地率 79%、平均死胡同 3.3 个——
+  //    对 5 岁小孩刚好：有迷宫感，但不会深到迷路崩溃。
+  for(cy=0;cy<CH;cy++)for(cx=0;cx<CW;cx++){
+    if(Math.random()<0.42) continue;
+    var w=1+2*((Math.random()*2)|0);                 // 1 / 3
+    var h=1+2*((Math.random()*2)|0);
+    var ox=cx*2+1-((w-1)>>1), oy=cy*2+1-((h-1)>>1);
+    if(ox<1||oy<1||ox+w>MW-1||oy+h>MH-1){ w=h=1; ox=cx*2+1; oy=cy*2+1; }
+    carve(g,ox,oy,ox+w-1,oy+h-1);
+  }
+
+  // 2) 挖走廊串房间。刻意保留 28% 不连 —— 那些格子就成为"要绕路的墙区"
+  for(cy=0;cy<CH;cy++)for(cx=0;cx<CW;cx++){
+    var ax=cx*2+1, ay=cy*2+1;
+    if(cx<CW-1 && Math.random()<0.72) corridor(ax,ay,cx*2+3,ay);
+    if(cy<CH-1 && Math.random()<0.72) corridor(ax,ay,ax,cy*2+3);
+  }
+
+  // 3) 再打通 6 堵内墙：制造回路，避免处处死胡同
+  var k;
+  for(k=0;k<6;k++){
+    var wx=1+((Math.random()*(MW-2))|0), wy=1+((Math.random()*(MH-2))|0);
+    carve(g,wx,wy,wx,wy);
+  }
+
+  // 4) 强制清出 3×3 出生地
+  carve(g,1,1,3,3);
+
+  // 5) 连通性兜底：把每个孤立区块横向凿通到主区域，杜绝"够不到的星星"
+  ensureConnected(g);
+  return g;
+}
+
+// 连通性兜底：反复「洪水填充 → 凿最短隧道 → 再填充」，直到全连通
+// 要点：凿完必须重跑填充让新通路传播出去，只做一次是无效的（上一版的 bug）
+function ensureConnected(g){
+  function flood(){
+    var seen=[],i,x,y;
+    for(y=0;y<MH;y++){ seen[y]=[]; for(x=0;x<MW;x++) seen[y][x]=false; }
+    var q=[[1,1]]; seen[1][1]=true; var head=0;
+    while(head<q.length){
+      var c=q[head++];
+      for(i=0;i<4;i++){
+        var nx=c[0]+DIRS[i][0], ny=c[1]+DIRS[i][1];
+        if(nx<1||ny<1||nx>=MW-1||ny>=MH-1) continue;
+        if(g[ny][nx]===1||seen[ny][nx]) continue;
+        seen[ny][nx]=true; q.push([nx,ny]);
+      }
+    }
+    return seen;
+  }
+
+  var guard=0;
+  while(guard++<60){
+    var seen=flood();
+    // 找一个够不到的孤立格
+    var bx=-1,by=-1,y,x;
+    for(y=1;y<MH-1&&by<0;y++)for(x=1;x<MW-1;x++)
+      if(g[y][x]===0&&!seen[y][x]){ bx=x; by=y; break; }
+    if(by<0) return true;                       // 全连通，收工
+
+    // 先试向右凿到主区域（挖得最少），不通再试向下
+    var tx=-1;
+    for(x=bx;x<MW-1;x++){ if(seen[by][x]){ tx=x; break; } }
+    if(tx>bx){ carve(g,bx,by,tx,by); continue; }
+    for(y=by;y<MH-1;y++){ if(seen[y][bx]){ tx=y; break; } }
+    if(tx>by){ carve(g,bx,by,bx,tx); continue; }
+    // 左右上下都碰不到主区域（理论上不会发生）：凿到边界再兜底
+    carve(g,bx,by,bx,Math.max(by,1));
+    carve(g,bx,1,Math.max(bx,1),1);
+  }
+  return false;
+}
+
+/* ---------- 状态 ---------- */
+var grid, house, door, npcAt, stars, player, steps, won, dlg, path, held, muted=false;
+
+function walkable(x,y){
+  if(x<0||y<0||x>=MW||y>=MH) return false;
+  if(grid[y][x]===1) return false;
+  if(house){
+    var hx=house.x, hy=house.y;
+    if((x===hx&&y===hy)||(x===hx+1&&y===hy)||(x===hx&&y===hy+1)) return false;
+  }
+  return true;
+}
+
+// 小屋放置：2×2 全空即可。选定后由 openDoorExit() 现场凿开出路——
+// 预判「出口是否存在」不可靠，因为出口格本身可能也是死路。
+function findHouse(){
+  for(var y=1;y<=MH-3;y++)for(var x=MW-3;x>=1;x--){
+    if(gridEmpty2x2(x,y)) return {x:x,y:y};
+  }
+  return null;
+}
+// 保证门格 (hx+1,hy+1) 能被玩家走到。
+// 不能只凿一格——那个出口格本身可能就在封闭口袋里（实测约 0.2% 的局）。
+// 做法：从门出发，在同行/同列里找最近的可达格，凿一条最短隧道过去。
+function openDoorExit(hx,hy){
+  var dx=hx+1, dy=hy+1, guard=0;
+  while(guard++<8){
+    if(dist(1,1,dx,dy)!==999) return true;              // 门已可达
+
+    var best=null, i, x, y;
+    // 同一行往右找
+    for(x=dx+1;x<MW-1;x++) if(dist(1,1,x,dy)!==999){ best=[x,dy]; break; }
+    // 同一列往下找（更短就选它）
+    for(y=dy+1;y<MH-1;y++) if(dist(1,1,dx,y)!==999){
+      if(!best || (y-dy) < (best[0]-dx)) best=[dx,y];
+      break;
+    }
+    // 同列往上找
+    for(y=dy-1;y>=1;y--) if(dist(1,1,dx,y)!==999){
+      if(!best || (dy-y) < (best[0]-dx)) best=[dx,y];
+      break;
+    }
+    // 同一行往左找（往左会绕到屋子另一侧，只在没有其他选择时用）
+    if(!best) for(x=dx-1;x>=1;x--) if(dist(1,1,x,dy)!==999){ best=[x,dy]; break; }
+
+    if(!best){
+      // 四面都碰不到主区域：向下凿到底，交给 ensureConnected 收尾
+      carve(grid,dx,dy,dx,MH-2);
+      carve(grid,dx,MH-2,MW-2,MH-2);
+      break;
+    }
+    carve(grid,dx,dy,best[0],best[1]);
+  }
+  return dist(1,1,dx,dy)!==999;
+}
+function gridEmpty2x2(x,y){
+  return grid[y][x]===0&&grid[y][x+1]===0&&grid[y+1][x]===0&&grid[y+1][x+1]===0;
+}
+
+function newGame(){
+  // 整体重来一局，直到「门必定可达」。前面的修补已把概率压到 ~0.04%，
+  // 这里再兜一层：孩子不该遇到任何走不到的目标。
+  var attempt=0, ok=false;
+  while(attempt++<30 && !ok){
+    grid=genMaze();
+    house=findHouse();
+    if(!house){ house={x:MW-5,y:1}; carve(grid,MW-5,1,MW-2,3); }
+    openDoorExit(house.x,house.y);
+    ensureConnected(grid);
+    door={x:house.x+1,y:house.y+1};
+    ok = (dist(1,1,door.x,door.y)!==999);
+  }
+  if(!ok){
+    // 极端兜底：在出生点旁边直接清一块地放屋子和门
+    carve(grid,MW-6,1,MW-3,3);
+    house={x:MW-5,y:1}; door={x:MW-4,y:2};
+  }
+
+  player={x:1,y:1,dir:'down',fromX:1,fromY:1,toX:1,toY:1,moving:false,t0:0};
+  var npcGuard=0;
+  npcAt={x:3,y:1};
+  while((!walkable(npcAt.x,npcAt.y)||dist(1,1,npcAt.x,npcAt.y)<2||npcAt.x===1&&npcAt.y===1)&&npcGuard++<200){
+    npcAt={x:1+((Math.random()*(MW-2))|0), y:1+((Math.random()*(MH-2))|0)};
+  }
+
+  stars=[]; var need=5, tries=0;
+  while(stars.length<need&&tries<600){
+    tries++;
+    var x=1+((Math.random()*(MW-2))|0), y=1+((Math.random()*(MH-2))|0);
+    if(!walkable(x,y)) continue;
+    if(dist(1,1,x,y)===999) continue;          // 落在封闭口袋里，换一个
+    if(dist(1,1,x,y)<5) continue;
+    if(x===npcAt.x&&y===npcAt.y) continue;
+    if(door&&x===door.x&&y===door.y) continue;
+    var ok=true;
+    for(var i=0;i<stars.length;i++) if(Math.abs(stars[i].x-x)+Math.abs(stars[i].y-y)<4){ok=false;break;}
+    if(!ok) continue;
+    stars.push({x:x,y:y});
+  }
+  // 兜底：极少数布局放不满 5 颗，就放宽间距再补齐，绝不让孩子少找星星
+  tries=0;
+  while(stars.length<need&&tries<800){
+    tries++;
+    var sx=1+((Math.random()*(MW-2))|0), sy=1+((Math.random()*(MH-2))|0);
+    if(!walkable(sx,sy)||dist(1,1,sx,sy)===999) continue;
+    if(sx===npcAt.x&&sy===npcAt.y) continue;
+    if(sx===door.x&&sy===door.y) continue;
+    var dup=false;
+    for(var j=0;j<stars.length;j++) if(stars[j].x===sx&&stars[j].y===sy){dup=true;break;}
+    if(dup) continue;
+    stars.push({x:sx,y:sy});
+  }
+  steps=0; won=false; dlg=null; path=null; held=null;
+  say(null, idleLines());
+  markDirty();
+}
+
+function dist(ax,ay,bx,by){
+  if(ax===bx&&ay===by) return 0;
+  var seen={},q=[[ax,ay]],head=0,d=0;
+  seen[ax+','+ay]=1;
+  while(head<q.length){
+    d++;
+    var sz=q.length-head, k;
+    for(k=0;k<sz;k++){
+      var c=q[head++];
+      for(var i=0;i<4;i++){
+        var nx=c[0]+DIRS[i][0], ny=c[1]+DIRS[i][1];
+        if(!walkable(nx,ny)) continue;
+        var kk=nx+','+ny;
+        if(seen[kk]) continue;
+        if(nx===bx&&ny===by) return d;
+        seen[kk]=1; q.push([nx,ny]);
+      }
+    }
+  }
+  return 999;
+}
+
+function bfs(){
+  var dist={}, par={}, q=[[player.x,player.y]], head=0;
+  dist[player.x+','+player.y]=0;
+  while(head<q.length){
+    var c=q[head++];
+    for(var i=0;i<4;i++){
+      var nx=c[0]+DIRS[i][0], ny=c[1]+DIRS[i][1];
+      if(!walkable(nx,ny)) continue;
+      var k=nx+','+ny;
+      if(dist[k]!==undefined) continue;
+      dist[k]=dist[c[0]+','+c[1]]+1;
+      par[k]=c;
+      q.push([nx,ny]);
+    }
+  }
+  return {dist:dist,par:par};
+}
+
+function firstStep(tx,ty){
+  var r=bfs();
+  if(r.dist[tx+','+ty]===undefined) return null;
+  var cur=[tx,ty], prev=[tx,ty];
+  while(!(cur[0]===player.x&&cur[1]===player.y)){
+    prev=cur;
+    cur=r.par[cur[0]+','+cur[1]];
+    if(!cur) return null;
+  }
+  var dx=prev[0]-player.x, dy=prev[1]-player.y;
+  for(var i=0;i<4;i++) if(DIRS[i][0]===dx&&DIRS[i][1]===dy) return DIRS[i][2];
+  return null;
+}
+
+/* ---------- 对话框 ---------- */
+var PER_PAGE=3;   // 框高可显示 3 行
+
+function say(name,lines){
+  b.font=FS+'px '+FONT;
+  var flat=[],i;
+  for(i=0;i<lines.length;i++) flat=flat.concat(wrap(lines[i],BOX.w-20));
+  dlg={name:name,lines:flat,page:0};
+  markDirty();
+}
+
+function idleLines(){
+  var got=5-stars.length;
+  if(won){
+    return ["太棒啦，五颗星星全部找到！","你成功进了星星村的小屋。","按 R 可以换一个迷宫再玩。"];
+  }
+  if(got>0){
+    return ["★ 已找到 "+got+" / 5 颗星星　　步数 "+steps,
+            "按 Z 问村长，他会告诉你往哪走。"];
+  }
+  return ["★ 星星 0 / 5　　步数 "+steps,
+          "按 Z 问村长，他会告诉你往哪走。"];
+}
+
+var CHIRP=[
+  "找齐 5 颗星星，小屋就会开门。",
+  "迷路啦？没关系，我给你指路。",
+  "我住在这个村子里很久啦。",
+  "走路一格一格走，不着急。",
+  "这颗星星是我昨天放下的。"
+];
+
+function talk(){
+  var got=5-stars.length, lines=[];
+  if(won){
+    lines=["哈哈，你已经全部找到啦！","小屋里会有新的谜题哦。"];
+  }else if(got===0){
+    lines=["哟，小朋友！","欢迎来到星星村。","这里藏着 5 颗小星星，","找齐了就能进那间小屋。"];
+  }else{
+    var dir=null, best=1e9, i;
+    for(i=0;i<stars.length;i++){
+      var d=firstStep(stars[i].x,stars[i].y);
+      if(d){ var dd=dist(player.x,player.y,stars[i].x,stars[i].y); if(dd<best){best=dd;dir=d;} }
+    }
+    var word={up:'上',down:'下',left:'左',right:'右'}[dir]||'前';
+    lines=["已经找到 "+got+" 颗啦，","还差 "+(5-got)+" 颗。","往"+word+"走走看，就在那边。"];
+  }
+  if(Math.random()<0.45) lines.push(CHIRP[(Math.random()*CHIRP.length)|0]);
+  say('村长',lines);
+  beep(660,0.06,0.05);
+}
+
+// Z 键：闲置提示框直接跳过；对话中则翻页，翻完关闭
+function advance(){
+  if(dlg && !dlg.name){ dlg=null; markDirty(); talk(); return; }
+  if(dlg){
+    var maxPage=Math.max(0,Math.ceil(dlg.lines.length/PER_PAGE)-1);
+    if(dlg.page<maxPage){ dlg.page++; beep(720,0.04,0.04); }
+    else { dlg=null; beep(440,0.04,0.03); say(null, idleLines()); }
+    markDirty(); return;
+  }
+  talk();
+}
+
+/* ---------- 音效：单声道方波 ---------- */
+var AC=null;
+function beep(f,dur,vol,delay){
+  if(muted) return;
+  try{
+    if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)();
+    if(AC.state==='suspended') AC.resume();
+    var t0=AC.currentTime+(delay||0);
+    var o=AC.createOscillator(), g=AC.createGain();
+    o.type='square'; o.frequency.value=f;
+    g.gain.setValueAtTime(vol,AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
+    o.connect(g); g.connect(AC.destination);
+    o.start(t0); o.stop(t0+dur+0.02);
+  }catch(e){}
+}
+function jingle(){ beep(523,0.09,0.06); beep(659,0.09,0.06,0.10); beep(784,0.09,0.06,0.20); beep(1047,0.18,0.06,0.30); }
+
+/* ---------- 移动 ---------- */
+var STEP_MS=150;
+function tryStep(dir,auto){
+  if(won) return false;
+  if(player.moving) return false;
+  var d=null,i;
+  for(i=0;i<4;i++) if(DIRS[i][2]===dir) d=DIRS[i];
+  if(!d) return false;
+  var nx=player.x+d[0], ny=player.y+d[1];
+  player.dir=dir;
+  if(nx===npcAt.x&&ny===npcAt.y){ if(!auto) talk(); return false; }
+  if(!walkable(nx,ny)){ beep(150,0.05,0.03); return false; }
+  player.fromX=player.x; player.fromY=player.y;
+  player.toX=nx; player.toY=ny;
+  player.moving=true; player.t0=now;
+  return true;
+}
+
+var now=0, last=0, dirty=true, lastBlink=-1, lastCursor=-1;
+function markDirty(){ dirty=true; }
+
+function update(ts){
+  now=ts;
+  if(player.moving){
+    var p=(ts-player.t0)/STEP_MS;
+    if(p>=1){
+      player.x=player.toX; player.y=player.toY;
+      player.moving=false; steps++;
+      onArrive();
+      // 自动寻路继续
+      if(path&&path.length){
+        var nxt=path.shift();
+        if(nxt){ tryStep(nxt,true); }
+        else path=null;
+      }else if(held){ tryStep(held,true); }
+    }
+    dirty=true;
+  }else if(held){
+    if(tryStep(held,false)===false){}
+  }
+  var bl=Math.floor(ts/320)%2, cb=Math.floor(ts/480)%2;
+  if(bl!==lastBlink||cb!==lastCursor){ lastBlink=bl; lastCursor=cb; dirty=true; }
+}
+
+function onArrive(){
+  if(won) return;
+  for(var i=0;i<stars.length;i++){
+    if(stars[i].x===player.x&&stars[i].y===player.y){
+      stars.splice(i,1); beep(880,0.06,0.06); beep(1320,0.10,0.05,0.06);
+      break;
+    }
+  }
+  if(door && player.x===door.x && player.y===door.y){
+    if(stars.length===0){
+      won=true; jingle(); say(null, idleLines()); markDirty(); return;
+    }
+    say('小屋',['门锁着……','还差 '+stars.length+' 颗星星。','先把星星找齐再来吧。']);
+    beep(150,0.08,0.04); return;
+  }
+  if(!won) say(null, idleLines());
+  markDirty();
+}
+
+/* ---------- 渲染 ---------- */
+function hash(x,y){ var n=(x*73856093)^(y*19349663); return (n>>>0)%97; }
+
+function render(){
+  var x,y,i;
+  b.fillStyle='#fff'; b.fillRect(0,0,W,H);
+
+  // 地图外框（高度跟着迷宫走，别写死）
+  var MH_ = MOY+MH*CELL+4;
+  b.fillStyle='#000'; b.fillRect(0,0,W,MH_);
+  b.fillStyle='#fff'; b.fillRect(2,2,W-4,MH_-4);
+
+  // 迷宫
+  for(y=0;y<MH;y++)for(x=0;x<MW;x++){
+    var px=MOX+x*CELL, py=MOY+y*CELL;
+    if(grid[y][x]===1){
+      b.fillStyle='#000'; b.fillRect(px,py,CELL,CELL);
+      b.fillStyle='#fff';
+      if(x>0&&grid[y][x-1]===0) b.fillRect(px,py,1,CELL);
+      if(x<MW-1&&grid[y][x+1]===0) b.fillRect(px+CELL-1,py,1,CELL);
+      if(y>0&&grid[y-1][x]===0) b.fillRect(px,py,CELL,1);
+      if(y<MH-1&&grid[y+1][x]===0) b.fillRect(px,py+CELL-1,CELL,1);
+    }else{
+      var h=hash(x,y);
+      if(h<4){ b.fillStyle='#000'; b.fillRect(px+2+(h%4)*2, py+3+((h*3)%5), 1,1); }
+    }
+  }
+
+  // 小屋（2×2 格，占 24×24）。坐标全部按 CELL 比例算，换格子尺寸不用改这里
+  var hx=MOX+house.x*CELL, hy=MOY+house.y*CELL, S=CELL*2;
+  var RH=Math.round(S*0.42);                       // 屋顶高度
+  b.fillStyle='#000'; b.fillRect(hx,hy,S,RH);
+  b.fillStyle='#fff';
+  for(i=3;i<RH;i+=4) b.fillRect(hx+2,hy+i,S-4,1);  // 屋瓦横纹
+  b.fillStyle='#fff'; b.fillRect(hx,hy+RH,S,S-RH);  // 墙体
+  b.fillStyle='#000';
+  b.fillRect(hx,hy+RH,S,2);                         // 上边
+  b.fillRect(hx,hy+S-2,S,2);                       // 下边
+  b.fillRect(hx,hy+RH,2,S-RH);                     // 左边
+  b.fillRect(hx+S-2,hy+RH,2,S-RH);                 // 右边
+  b.fillRect(hx+3,hy+RH+3,6,5);                    // 窗
+  b.fillRect(hx+2,hy+RH+9,8,7);
+  b.fillRect(hx+CELL+3,hy+RH+2,7,S-RH-2);          // 门
+  b.fillRect(hx+CELL+3,hy+RH+2,7,2);
+
+  // 星星
+  var blink=Math.floor(now/320)%2;
+  b.fillStyle='#000';
+  for(i=0;i<stars.length;i++){
+    drawSprite(blink?STAR_B:STAR_A, MOX+stars[i].x*CELL, MOY+stars[i].y*CELL);
+  }
+
+  // 村长
+  drawSprite(NPC, MOX+npcAt.x*CELL, MOY+npcAt.y*CELL);
+
+  // 玩家
+  var fr=0;
+  if(player.moving) fr=((now-player.t0)/STEP_MS)<0.5?1:0;
+  var rows=P_DOWN;
+  if(player.dir==='down') rows=fr?P_DOWN_B:P_DOWN;
+  else if(player.dir==='up') rows=fr?P_UP_B:P_UP;
+  else if(player.dir==='right') rows=fr?P_SIDE_B:P_SIDE;
+  else rows=fr?P_LEFT_B:P_LEFT;
+  var pxx=MOX+player.x*CELL, pyy=MOY+player.y*CELL;
+  if(player.moving){
+    var t=(now-player.t0)/STEP_MS; if(t>1) t=1;
+    pxx=MOX+(player.fromX+(player.toX-player.fromX)*t)*CELL;
+    pyy=MOY+(player.fromY+(player.toY-player.fromY)*t)*CELL;
+  }
+  b.fillStyle='#000';
+  drawSprite(rows, Math.round(pxx), Math.round(pyy));
+
+  drawBox();
+}
+
+function wrap(text,maxW){
+  b.font=FS+'px '+FONT;
+  var out=[],line='';
+  for(var i=0;i<text.length;i++){
+    var ch=text.charAt(i);
+    if(line && b.measureText(line+ch).width>maxW){ out.push(line); line=ch; }
+    else line+=ch;
+  }
+  if(line) out.push(line);
+  return out;
+}
+
+function drawBox(){
+  b.fillStyle='#000'; b.fillRect(BOX.x,BOX.y,BOX.w,BOX.h);
+  b.fillStyle='#fff'; b.fillRect(BOX.x+2,BOX.y+2,BOX.w-4,BOX.h-4);
+
+  var i;
+  if(dlg){
+    var from=dlg.page*PER_PAGE;
+    var slice=dlg.lines.slice(from,from+PER_PAGE);
+    b.font=FS+'px '+FONT;
+    b.fillStyle='#000'; b.textBaseline='top'; b.textAlign='left';
+    for(i=0;i<slice.length;i++) b.fillText(slice[i], BOX.x+7, BOX.y+4+i*LH);
+    // ▼ 闪烁：还有下一页
+    var hasMore=(from+PER_PAGE<dlg.lines.length);
+    if(hasMore && Math.floor(now/480)%2){
+      b.fillRect(BOX.x+BOX.w-14, BOX.y+BOX.h-13, 7, 2);
+      b.fillRect(BOX.x+BOX.w-12, BOX.y+BOX.h-11, 3, 2);
+      b.fillRect(BOX.x+BOX.w-10, BOX.y+BOX.h-9,  1, 2);
+    }
+  }
+
+  if(dlg && dlg.name){
+    b.font=FS+'px '+FONT;
+    var tw=Math.ceil(b.measureText(dlg.name).width)+16;
+    b.fillStyle='#000'; b.fillRect(BOX.x,BOX.y-14,tw,14);
+    b.fillStyle='#fff'; b.fillRect(BOX.x+2,BOX.y-12,tw-4,10);
+    b.fillStyle='#000'; b.textBaseline='top'; b.fillText(dlg.name, BOX.x+6, BOX.y-13);
+  }
+}
+
+/* ---------- 1-bit 阈值化输出 ---------- */
+function present(){
+  var img=b.getImageData(0,0,W,H), d=img.data;
+  for(var i=0;i<d.length;i+=4){
+    var lum=(d[i]*299+d[i+1]*587+d[i+2]*114)/1000;
+    var v=(d[i+3]>100&&lum<140)?0:255;
+    d[i]=d[i+1]=d[i+2]=v; d[i+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+}
+
+function loop(ts){
+  requestAnimationFrame(loop);
+  if(!last) last=ts;
+  update(ts);
+  if(dirty){ render(); present(); dirty=false; }
+  last=ts;
+}
+requestAnimationFrame(loop);
+
+/* ---------- 缩放适配 ---------- */
+function fit(){
+  // 只算「会跟画面上下堆叠」的元素；#side 是并排的，不占高度。
+  // 低于 max-width:560px 时 #side 会折到画面下方，所以按实际位置判断。
+  var stacked = window.innerWidth<=560;
+  var others=0, els=document.querySelectorAll('#wrap > h1, .keys');
+  for(var i=0;i<els.length;i++){
+    var r=els[i].getBoundingClientRect();
+    if(r.height>0) others+=r.height+10;
+  }
+  if(stacked){
+    var sr=document.getElementById('side').getBoundingClientRect();
+    if(sr.height>0) others+=sr.height+14;
+  }
+  var availW=window.innerWidth-40-(stacked?0:150);
+  var availH=window.innerHeight-others-30;   // 30 ≈ body padding + stage 边框
+  var s=Math.max(1,Math.min(Math.floor(availW/W),Math.floor(availH/H),7));
+  cv.style.width=(W*s)+'px';
+  cv.style.height=(H*s)+'px';
+}
+window.addEventListener('resize',fit);
+window.addEventListener('orientationchange',fit);
+fit();
+
+/* ---------- 输入 ---------- */
+var KEYMAP={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',
+            w:'up',s:'down',a:'left',d:'right',W:'up',S:'down',A:'left',D:'right'};
+
+window.addEventListener('keydown',function(e){
+  var dir=KEYMAP[e.key];
+  if(dir){ e.preventDefault(); path=null; held=dir; if(!player.moving) tryStep(dir,false); return; }
+  if(e.key==='z'||e.key==='Z'||e.key===' '||e.key==='Enter'){ e.preventDefault(); held=null; path=null; advance(); return; }
+  if(e.key==='r'||e.key==='R'){ e.preventDefault(); held=null; newGame(); }
+});
+window.addEventListener('keyup',function(e){
+  var dir=KEYMAP[e.key];
+  if(dir&&held===dir) held=null;
+});
+window.addEventListener('blur',function(){ held=null; });
+
+// 触屏方向键
+var padBtns=document.querySelectorAll('.pad button');
+for(var pi=0;pi<padBtns.length;pi++){
+  (function(btn){
+    var dir=btn.getAttribute('data-dir');
+    var on=function(e){ e.preventDefault(); path=null; held=dir; if(!player.moving) tryStep(dir,false); };
+    var off=function(){ if(held===dir) held=null; };
+    btn.addEventListener('touchstart',on,{passive:false});
+    btn.addEventListener('touchend',off);
+    btn.addEventListener('mousedown',on);
+    btn.addEventListener('mouseup',off);
+    btn.addEventListener('mouseleave',off);
+  })(padBtns[pi]);
+}
+
+// 点地图格子 → 自动寻路
+cv.addEventListener('click',function(e){
+  var r=cv.getBoundingClientRect();
+  var cx=Math.floor((e.clientX-r.left)/r.width*W);
+  var cy=Math.floor((e.clientY-r.top)/r.height*H);
+  var gx=Math.floor((cx-MOX)/CELL), gy=Math.floor((cy-MOY)/CELL);
+  held=null;
+  if(gx<0||gy<0||gx>=MW||gy>=MH) return;
+  if(!walkable(gx,gy)) return;
+  if(gx===player.x&&gy===player.y) return;
+  var res=bfs();
+  if(res.dist[gx+','+gy]===undefined) return;
+  var chain=[],cur=[gx,gy];
+  while(!(cur[0]===player.x&&cur[1]===player.y)){ chain.unshift(cur); cur=res.par[cur[0]+','+cur[1]]; if(!cur) return; }
+  path=[]; var prev=[player.x,player.y], j;
+  for(var i=0;i<chain.length;i++){
+    for(j=0;j<4;j++){
+      if(chain[i][0]-prev[0]===DIRS[j][0]&&chain[i][1]-prev[1]===DIRS[j][1]){ path.push(DIRS[j][2]); break; }
+    }
+    prev=chain[i];
+  }
+  if(!player.moving&&path.length) tryStep(path.shift(),true);
+});
+
+document.getElementById('btnHint').addEventListener('click',function(){ held=null; path=null; if(dlg&&dlg.name==='村长'){advance();}else{talk();} });
+document.getElementById('btnNew').addEventListener('click',function(){ held=null; newGame(); });
+document.getElementById('btnSnd').addEventListener('click',function(){
+  muted=!muted; this.textContent='音效：'+(muted?'关':'开');
+});
+
+// DOM 就绪后再初始化：脚本在 body 末尾，但 fit() 要量其它元素的高度
+function boot(){ newGame(); fit(); }
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',boot);
+else boot();
+})();
+</script>
+</body>
+</html>
